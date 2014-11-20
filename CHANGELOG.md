@@ -2,6 +2,29 @@
 
 ## Not released
 
+## 0.7.1
+
+* Allow sfdc_client to be set. ([#92][])
+
+## 0.7.0
+
+* Rails4-style conditional has_many associations  ([Dan Olson][])
+* Add `#includes` query method to eager load has_many association.  ([Dan Olson][])
+* Add `#includes` query method to eager load belongs_to association. ([#65][])
+* SObject#destroy method.
+
+## 0.6.1
+
+* Fix missing require of 'restforce'. Now clients don't need to add an initializer.
+
+## 0.6.0
+
+* Add select statement functionality. ([Pablo Oldani][], [#33][])
+* Add callback functionality ([Pablo Oldani][], [#20][])
+* Support bind parameters. ([Dan Olson][], [#29][])
+* Fix when passing nil value in a :where condition. ([Armando Andini][])
+* Model generator complete ([Armando Andini][], [#19][])
+
 ## 0.5.0
 
 * Provide a default id field for all SObject subclassees ([Dan Olson][], [#30][])
@@ -59,11 +82,16 @@
 [#14]: https://github.com/ionia-corporation/active_force/issues/14
 [#15]: https://github.com/ionia-corporation/active_force/issues/15
 [#19]: https://github.com/ionia-corporation/active_force/issues/19
+[#20]: https://github.com/ionia-corporation/active_force/issues/20
 [#21]: https://github.com/ionia-corporation/active_force/issues/21
 [#24]: https://github.com/ionia-corporation/active_force/issues/24
 [#26]: https://github.com/ionia-corporation/active_force/issues/26
 [#28]: https://github.com/ionia-corporation/active_force/issues/28
+[#29]: https://github.com/ionia-corporation/active_force/issues/29
 [#30]: https://github.com/ionia-corporation/active_force/issues/30
+[#33]: https://github.com/ionia-corporation/active_force/issues/33
+[#65]: https://github.com/ionia-corporation/active_force/issues/65
+[#92]: https://github.com/ionia-corporation/active_force/issues/92
 [Pablo Oldani]: https://github.com/olvap
 [Armando Andini]: https://github.com/antico5
 [José Piccioni]: https://github.com/lmhsjackson

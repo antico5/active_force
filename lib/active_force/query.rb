@@ -30,6 +30,11 @@ module ActiveForce
       SOQL
     end
 
+    def select *columns
+      @query_fields = columns
+      self
+    end
+
     def where condition
       @conditions << condition if condition
       self
@@ -81,19 +86,13 @@ module ActiveForce
       self
     end
 
-    def options args
-      where args[:where]
-      limit args[:limit]
-      order args[:order]
-    end
-
     protected
       def build_select
-        @query_fields.uniq.join(', ')
+        @query_fields.compact.uniq.join(', ')
       end
 
       def build_where
-        "WHERE #{ @conditions.join(' AND ') }" unless @conditions.empty?
+        "WHERE (#{ @conditions.join(') AND (') })" unless @conditions.empty?
       end
 
       def build_limit

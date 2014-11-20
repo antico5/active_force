@@ -3,39 +3,31 @@ require 'active_attr'
 require 'active_attr/dirty'
 require 'active_force/active_query'
 require 'active_force/association'
+require 'active_force/mapping'
 require 'yaml'
 require 'forwardable'
 require 'logger'
-
+require 'restforce'
 
 module ActiveForce
+  class RecordInvalid < StandardError;end
+
   class SObject
     include ActiveAttr::Model
     include ActiveAttr::Dirty
-    include ActiveForce::Association
-    STANDARD_TYPES = %w[ Account Contact Opportunity Campaign]
+    extend ActiveForce::Association
+    extend ActiveModel::Callbacks
+
+    define_model_callbacks :save, :create, :update
 
     class_attribute :mappings, :table_name
 
     class << self
       extend Forwardable
-      def_delegators :query, :where, :first, :last, :all, :find, :find_by, :count
+      def_delegators :query, :where, :first, :last, :all, :find, :find_by, :count, :includes, :limit, :order, :select
+      def_delegators :mapping, :table, :table_name, :custom_table?, :mappings
 
       private
-
-      ###
-      # Transforms +attribute+ to the conventional Salesforce API name.
-      #
-      # Example:
-      #   > default_api_name :some_attribute
-      #   => "Some_Attribute__c"
-      def default_api_name(attribute)
-        String(attribute).split('_').map(&:capitalize).join('_') << '__c'
-      end
-
-      def custom_table_name
-        self.name if STANDARD_TYPES.include? self.name
-      end
 
       ###
       # Provide each subclass with a default id field. Can be overridden
@@ -45,25 +37,23 @@ module ActiveForce
       end
     end
 
-    # The table name to used to make queries.
-    # It is derived from the class name adding the "__c" when needed.
-    def self.table_name
-      @table_name ||= custom_table_name || "#{ self.name.split('::').last }__c"
+    def self.mapping
+      @mapping ||= ActiveForce::Mapping.new name
     end
 
     def self.fields
-      mappings.values
+      mapping.sfdc_names
     end
 
     def self.query
       ActiveForce::ActiveQuery.new self
     end
 
-    def self.build sf_table_description
-      return unless sf_table_description
+    def self.build mash
+      return unless mash
       sobject = new
-      mappings.each do |attr, sf_field|
-        sobject[attr] = sf_table_description[sf_field]
+      mash.each do |column, sf_value|
+        sobject.write_value column, sf_value
       end
       sobject.changed_attributes.clear
       sobject
@@ -71,55 +61,70 @@ module ActiveForce
 
     def update_attributes! attributes = {}
       assign_attributes attributes
-      return false unless valid?
-      sfdc_client.update! table_name, attributes_for_sfdb_update
-      changed_attributes.clear
-      self
+      validate!
+      run_callbacks :save do
+        run_callbacks :update do
+          sfdc_client.update! table_name, attributes_for_sfdb
+          changed_attributes.clear
+        end
+      end
+      true
     end
+
+    alias_method :update!, :update_attributes!
 
     def update_attributes attributes = {}
       update_attributes! attributes
-    rescue Faraday::Error::ClientError => error
-      logger_output __method__
+    rescue Faraday::Error::ClientError, RecordInvalid => error
+      handle_save_error error
     end
 
     alias_method :update, :update_attributes
 
     def create!
-      return false unless valid?
-      self.id = sfdc_client.create! table_name, attributes_for_sfdb_create
-      changed_attributes.clear
+      validate!
+      run_callbacks :save do
+        run_callbacks :create do
+          self.id = sfdc_client.create! table_name, attributes_for_sfdb
+          changed_attributes.clear
+        end
+      end
       self
     end
 
     def create
       create!
-    rescue Faraday::Error::ClientError => error
-      logger_output __method__
+    rescue Faraday::Error::ClientError, RecordInvalid => error
+      handle_save_error error
+      self
+    end
+
+    def destroy
+      sfdc_client.destroy! self.class.table_name, id
     end
 
     def self.create args
-      new(args).save
+      new(args).create
     end
 
     def self.create! args
-      new(args).save!
-    end
-
-    def save
-      if persisted?
-        update
-      else
-        create
-      end
+      new(args).create!
     end
 
     def save!
-      if persisted?
-        update_attributes!
-      else
-        create!
+      run_callbacks :save do
+        if persisted?
+          !!update!
+        else
+          !!create!
+        end
       end
+    end
+
+    def save
+      save!
+    rescue Faraday::Error::ClientError, RecordInvalid => error
+      handle_save_error error
     end
 
     def to_param
@@ -127,60 +132,63 @@ module ActiveForce
     end
 
     def persisted?
-      id?
+      !!id
     end
 
     def self.field field_name, args = {}
-      args[:from] ||= default_api_name(field_name)
-      args[:as]   ||= :string
-      mappings[field_name] = args[:from]
-      attribute field_name, sf_type: args[:as]
+      mapping.field field_name, args
+      attribute field_name
     end
 
-    def self.mappings
-      @mappings ||= {}
+    def reload
+      association_cache.clear
+      reloaded = self.class.find(id)
+      self.attributes = reloaded.attributes
+      changed_attributes.clear
+      self
     end
 
-    private
+    def write_value column, value
+      if association = self.class.find_association(column)
+        field = association.relation_name
+        value = Association::RelationModelBuilder.build(association, value)
+      else
+        field = mappings.invert[column]
+        value = self.class.mapping.translate_value value, field unless value.nil?
+      end
+      send "#{field}=", value if field
+    end
 
-    def logger_output action
+   private
+
+    def validate!
+      unless valid?
+        raise RecordInvalid.new(
+          "Validation failed: #{errors.full_messages.join(', ')}"
+        )
+      end
+    end
+
+    def handle_save_error error
+      return false if error.class == RecordInvalid
+      logger_output __method__, error, attributes
+    end
+
+    def association_cache
+      @association_cache ||= {}
+    end
+
+    def logger_output action, exception, params = {}
       logger = Logger.new(STDOUT)
-      logger.info("[SFDC] [#{self.class.model_name}] [#{self.class.table_name}] Error while #{ action }, params: #{hash}, error: #{error.inspect}")
-      errors[:base] << error.message
+      logger.info("[SFDC] [#{self.class.model_name}] [#{self.class.table_name}] Error while #{ action }, params: #{params}, error: #{exception.inspect}")
+      errors[:base] << exception.message
       false
     end
 
-    def attributes_for_sfdb_create
-      attrs = mappings.map do |attr, sf_field|
-        value = read_attribute(attr)
-        [sf_field, value] if value
-      end
-      Hash.new(attrs.compact)
-    end
-
-
-    def attributes_for_sfdb_update
-      attrs = changed_mappings.map do |attr, sf_field|
-        [sf_field, read_attribute(attr)]
-      end
-      Hash.new(attrs).merge('Id' => id)
-    end
-
-    def changed_mappings
-      mappings.select { |attr, sf_field| changed.include? attr.to_s}
-    end
-
-    def read_value field
-      case sf_field_type field
-      when :multi_picklist
-        attribute(field.to_s).reject(&:empty?).join(';')
-      else
-        attribute(field.to_s)
-      end
-    end
-
-    def sf_field_type field
-      self.class.attributes[field][:sf_tpye]
+    def attributes_for_sfdb
+      attrs = self.class.mapping.translate_to_sf(attributes_and_changes)
+      attrs.merge!({'Id' => id }) if persisted?
+      attrs
     end
 
     def self.picklist field
@@ -191,11 +199,12 @@ module ActiveForce
     end
 
     def self.sfdc_client
-      @client ||= Restforce.new
+      ActiveForce.sfdc_client
     end
 
     def sfdc_client
       self.class.sfdc_client
     end
   end
+
 end
